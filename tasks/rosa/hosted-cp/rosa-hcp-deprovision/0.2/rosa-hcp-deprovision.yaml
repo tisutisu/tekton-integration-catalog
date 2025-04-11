@@ -52,10 +52,6 @@ spec:
         $(params.ocp-login-command)
 
         curl -sSL https://raw.githubusercontent.com/konflux-ci/konflux-qe-definitions/main/scripts/gather-extra.sh | bash
-      when:
-        - input: $(params.pipeline-aggregate-status)
-          operator: notin
-          values: ["Succeeded"]
     - name: secure-push-oci
       ref:
         resolver: git
@@ -73,10 +69,6 @@ spec:
           value: $(params.oci-container)
         - name: credentials-volume-name
           value: konflux-test-infra-volume
-      when:
-        - input: $(params.pipeline-aggregate-status)
-          operator: notin
-          values: ["Succeeded"]
     - name: deprovision-rosa
       image: quay.io/konflux-qe-incubator/konflux-qe-tools:latest
       onError: continue
