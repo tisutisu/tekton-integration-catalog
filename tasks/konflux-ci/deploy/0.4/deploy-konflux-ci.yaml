@@ -1,0 +1,485 @@
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: deploy-konflux-ci
+  labels:
+    konflux-ci/kind: "true"
+    app.kubernetes.io/version: "0.4"
+    upstream-usable: "true"
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.44.x"
+    tekton.dev/tags: konflux
+spec:
+  description: |
+    This task performs a full operator based Konflux CI deployment. It clones the specified Git repository,
+    checks out the desired branch, and runs deployment scripts using a kubeconfig retrieved from
+    a Kubernetes secret. It is intended for use in OpenShift Pipelines or other Tekton environments.
+
+  params:
+    - name: cluster-access-secret
+      description: Name of the Kubernetes Secret that contains the kubeconfig (base64 encoded) used to access the target cluster.
+    - name: repo-url
+      description: URL of the Git repository containing the Konflux CI deployment scripts.
+      default: https://github.com/konflux-ci/konflux-ci.git
+    - name: repo-branch
+      description: Git branch to check out when cloning the repository.
+      default: main
+    - name: create-test-resources
+      description: 'Indicates if a set of test resources should be installed'
+      default: 'true'
+    - name: component-name
+      description: |
+        The GitHub repository name of the Konflux CI component to customize (e.g., `build-service`, `release-service`).
+        Used for applying image or Kubernetes manifest overrides.
+      default: ''
+    - name: component-image-repository
+      description: |
+        Overrides the container image repository for the `component-name` (e.g., `quay.io/my-org/my-custom-image`).
+      default: ''
+    - name: component-image-tag
+      description: |
+        Overrides the container image tag for the `component-name` (e.g., `latest`, `my-feature-branch`).
+      default: ''
+    - name: component-pr-owner
+      description: |
+        GitHub owner (user|org) of the fork/PR providing custom Kubernetes manifests for the `component-name`.
+      default: ''
+    - name: component-pr-sha
+      description: |
+        Commit SHA of the PR (from `component-pr-owner`) supplying custom Kubernetes manifests for the `component-name`.
+      default: ''
+    - name: component-pr-source-branch
+      description: |
+        GitHub source branch of the pull request.
+      default: ''
+    - name: oci-ref
+      type: string
+      description: Full OCI artifact reference in a format "quay.io/org/repo:tag. It's used for storing logs from the Task's Steps
+    - name: oci-credentials
+      type: string
+      description: |
+        A name of the secret containing credentials for container registry where the artifacts will be stored.
+        The secret should contain `data.oci-storage-dockerconfigjson: <dockerconfigjson-content>`
+    - name: build-credentials
+      type: string
+      description: |
+        A name of the secret containing credentials for deploying image-controller, smee.io and GitHub application used for building application using Konflux
+    - name: harden-kyverno
+      description: |
+        Set to 'true' to harden Kyverno when running a high number of
+        concurrent Tekton PipelineRuns in the cluster.
+        Scales admission-controller to 3 replicas with increased resources,
+        background-controller to 2 replicas, and disables the reports-controller
+        to reduce etcd write churn under heavy webhook traffic.
+      default: 'false'
+
+  volumes:
+    - name: cluster-credentials
+      secret:
+        secretName: $(params.cluster-access-secret)
+    - name: workdir
+      emptyDir: {}
+    - name: logs
+      emptyDir: {}
+    - name: oci-credentials
+      secret:
+        secretName: $(params.oci-credentials)
+    - name: build-credentials
+      secret:
+        secretName: $(params.build-credentials)
+
+  stepTemplate:
+    env:
+      - name: KUBECONFIG
+        value: '/cluster-credentials/kubeconfig'
+      - name: LOG_FILENAME
+        value: '/var/log-dir/deploy-konflux-ci.log'
+    volumeMounts:
+      - name: cluster-credentials
+        mountPath: /cluster-credentials
+      - name: workdir
+        mountPath: /var/workdir
+      - name: logs
+        mountPath: /var/log-dir/
+      - name: build-credentials
+        mountPath: /build-credentials
+
+  steps:
+    - name: clone-konflux-ci
+      image: quay.io/openshift-pipeline/pipelines-git-init-rhel9@sha256:7eee14366c516d92cf7480c9bc256cf0e544bf06da5d46ffb5e8bfe3e448326c
+      onError: continue
+      workingDir: /var/workdir
+      securityContext:
+        runAsUser: 0
+      args:
+        - -url=$(params.repo-url)
+        - -revision=$(params.repo-branch)
+        - -path=.
+    # - name: solve-pr-pairing
+    #   image: quay.io/konflux-ci/tekton-integration-catalog/utils:latest
+    #   onError: continue
+    #   workingDir: /var/workdir
+    #   when:
+    #     - input: "$(params.component-name)"
+    #       operator: notin
+    #       values: [""]
+    #   env:
+    #     - name: EVENT_TYPE
+    #       valueFrom:
+    #         fieldRef:
+    #           fieldPath: metadata.labels['pac.test.appstudio.openshift.io/event-type']
+    #     - name: COMPONENT_NAME
+    #       value: "$(params.component-name)"
+    #     - name: IMAGE_TAG
+    #       value: "$(params.component-image-tag)"
+    #     - name: PR_SOURCE_BRANCH
+    #       value: "$(params.component-pr-source-branch)"
+    #     - name: PR_AUTHOR
+    #       value: "$(params.component-pr-owner)"
+    #     - name: PR_SHA
+    #       value: "$(params.component-pr-sha)"
+    #   script: |
+    #     #!/bin/bash
+    #     set -euo pipefail
+
+    #     {
+    #       echo "[INFO] Fetching and executing solve-pr-pairing.sh..."
+    #       curl -sSfL https://raw.githubusercontent.com/konflux-ci/tekton-integration-catalog/main/scripts/konflux-ci-deploy/solve-pr-pairing.sh | bash
+    #     } 2>&1 | tee -a "$LOG_FILENAME"
+    # - name: update-kustomization
+    #   image: quay.io/konflux-ci/tekton-integration-catalog/utils:latest
+    #   onError: continue
+    #   workingDir: /var/workdir
+    #   when:
+    #     - input: "$(params.component-name)"
+    #       operator: notin
+    #       values: [""]
+    #   env:
+    #     - name: SOURCE_REPO_URL
+    #       valueFrom:
+    #         fieldRef:
+    #           fieldPath: metadata.annotations['pac.test.appstudio.openshift.io/source-repo-url']
+    #   script: |
+    #     #!/bin/bash
+    #     set -euo pipefail
+
+    #     {
+    #       if [ -f /var/workdir/.env ]; then
+    #         echo "[INFO] Loading env vars from /var/workdir/.env: $(cat /var/workdir/.env)"
+    #         source /var/workdir/.env
+    #       else
+    #         echo "[INFO] Loading env vars from parameters"
+
+    #         COMPONENT_NAME="$(params.component-name)"
+    #         IMAGE_REPO="$(params.component-image-repository)"
+    #         IMAGE_TAG="$(params.component-image-tag)"
+    #         PR_OWNER="$(params.component-pr-owner)"
+    #         PR_SHA="$(params.component-pr-sha)"
+    #       fi
+
+        #   # Handles cases when PR is created from upstream repository branches (i.e. branches created by *[bot])
+        #   SOURCE_REPO_URL="${SOURCE_REPO_URL:-}"
+        #   SOURCE_REPO_OWNER="${PR_OWNER}"
+
+        #   if [[ -n "$SOURCE_REPO_URL" && "$SOURCE_REPO_URL" != *"/$SOURCE_REPO_OWNER/"* ]]; then
+        #     SOURCE_REPO_OWNER=$(echo "$SOURCE_REPO_URL" | sed -E 's|https://github.com/([^/]+)/.*|\1|')
+        #     echo "[INFO] SOURCE_REPO_OWNER updated to: $SOURCE_REPO_OWNER"
+        #   fi
+
+        #   # Repo names do not match the ones of the component. Try to find the right kustomization.yaml based on the component name.
+        #   KUSTOMIZATION_PATH=$(find konflux-ci/ -type f -name "kustomization.yaml" -path "*${COMPONENT_NAME%-service}*/core/*" | head -n 1)
+
+        #   # Check if the file exists
+        #   if [[ ! -f "${KUSTOMIZATION_PATH}" ]]; then
+        #     echo "[WARNING] No substitutions will be applied as the kustomization file for $(params.component-name) has not been found."
+        #     exit 0
+        #   fi
+
+        #   # Apply substitutions
+        #   if [[ -n "$IMAGE_REPO" ]]; then
+        #     echo "[INFO] Updating image repository to $IMAGE_REPO"
+        #     yq -i e "(.images.[] | select(.name==\"quay.io/konflux-ci/${COMPONENT_NAME}\")) |= .newName=\"${IMAGE_REPO}\"" "$KUSTOMIZATION_PATH"
+        #   fi
+
+        #   if [[ -n "$IMAGE_TAG" ]]; then
+        #     echo "[INFO] Updating image tag to $IMAGE_TAG"
+        #     yq -i e "(.images.[] | select(.name==\"quay.io/konflux-ci/${COMPONENT_NAME}\")) |= .newTag=\"${IMAGE_TAG}\"" "$KUSTOMIZATION_PATH"
+        #   fi
+
+        #   if [[ -n "$SOURCE_REPO_OWNER" && -n "$PR_SHA" ]]; then
+        #     echo "[INFO] Updating GitHub reference to $SOURCE_REPO_OWNER@$PR_SHA"
+        #     yq -i e "(.resources[] | select(. ==\"*github.com/konflux-ci/${COMPONENT_NAME}/config/default*\")) |= \"https://github.com/${SOURCE_REPO_OWNER}/${COMPONENT_NAME}/config/default?ref=${PR_SHA}\"" "$KUSTOMIZATION_PATH"
+        #     yq -i e "(.resources[] | select(. ==\"*github.com/konflux-ci/${COMPONENT_NAME}/config/snapshotgc*\")) |= \"https://github.com/${SOURCE_REPO_OWNER}/${COMPONENT_NAME}/config/snapshotgc?ref=${PR_SHA}\"" "$KUSTOMIZATION_PATH"
+        #   fi
+        # } 2>&1 | tee -a "$LOG_FILENAME"
+    - name: deploy-konflux-ci
+      image: quay.io/konflux-ci/tekton-integration-catalog/utils:latest
+      onError: continue
+      workingDir: /var/workdir
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        # {
+        #   server=$(grep server $KUBECONFIG | awk '{print $2}')
+        #   echo "[INFO] kubernetes cluster is hosted on: $server"
+
+        #   server_ip=$(sed -e 's|.*/||' -e 's|:.*||' <<< $server)
+
+        #   sed -i "s|localhost|${server_ip}|g" dependencies/dex/config.yaml
+        #   sed -i "s|localhost|${server_ip}|g" dependencies/pipelines-as-code/custom-console-patch.yaml
+        #   sed -i "s|localhost|${server_ip}|g" konflux-ci/ui/core/proxy/proxy.yaml
+
+        #   sed -i "s|http://pipelines-as-code-controller.*:|http://${server_ip}:|g" dependencies/smee/smee-client.yaml
+
+        #   # Configure build-service PAC_WEBHOOK_URL to use smee channel for Codeberg/GitLab webhook support
+        #   if [ -f /build-credentials/smee-channel ]; then
+        #     SMEE_CHANNEL=$(< /build-credentials/smee-channel)
+        #     echo "[INFO] Configuring PAC_WEBHOOK_URL to use smee channel: ${SMEE_CHANNEL}"
+        #     sed -i "s|http://pipelines-as-code-controller.pipelines-as-code.svc.cluster.local:8180|${SMEE_CHANNEL}|g" konflux-ci/build-service/core/build-service-env-patch.yaml
+        #   else
+        #     echo "[INFO] No smee-channel found, using server IP for PAC_WEBHOOK_URL"
+        #     sed -i "s|http://pipelines-as-code-controller.*:|http://${server_ip}:|g" konflux-ci/build-service/core/build-service-env-patch.yaml
+        #   fi
+
+        #   kubectl cluster-info
+
+        #   echo "[INFO] Installing Konflux CI dependencies"
+        #   ./deploy-deps.sh
+        #   ./wait-for-all.sh
+
+        #   echo "[INFO] Installing Konflux CI..."
+        #   ./deploy-konflux.sh
+
+        #   # Apply pipelines-runner cluster role
+        #   kubectl apply -f https://raw.githubusercontent.com/redhat-appstudio/infra-deployments/main/components/konflux-rbac/base/appstudio-pipelines-runner.yaml
+
+        #   kubectl get po -A
+        # } 2>&1 | tee -a $LOG_FILENAME
+        {
+          echo ">>> WOKRING INSIDE: $(pwd)"
+          echo ">>> FILES HERE: "
+          ls -lrt
+          echo ">>>>>>>>> END OF LIST OF FILES"
+
+          echo "[INFO] Reading required secrets..."
+          GITHUB_APP_ID=$(< /build-credentials/gh-app-id)
+          GITHUB_PRIVATE_KEY=$(< /build-credentials/gh-app-private-key)
+          WEBHOOK_SECRET=$(< /build-credentials/gh-app-webhook-secret)
+          QUAY_ORGANIZATION=$(< /build-credentials/quay-org-name)
+          QUAY_TOKEN=$(< /build-credentials/quay-org-token)
+          SMEE_CHANNEL=$(< /build-credentials/smee-channel)
+
+          export DEPLOY_LOCAL_SKIP_KIND=1
+          export KIND_CLUSTER=konflux
+          export KONFLUX_CR=operator/config/samples/konflux-e2e.yaml
+          export KONFLUX_READY_TIMEOUT=30m
+          export CONTAINER_TOOL=podman
+          export OPERATOR_INSTALL_METHOD=local
+          echo ">>> Now running the deploy script"
+
+          ./scripts/deploy-local.sh
+
+        } 2>&1 | tee -a $LOG_FILENAME
+
+    # - name: deploy-image-controller-and-smee
+    #   image: quay.io/konflux-ci/tekton-integration-catalog/utils:latest
+    #   onError: continue
+    #   workingDir: /var/workdir
+    #   script: |
+    #     #!/bin/bash
+    #     set -euo pipefail
+
+    #     {
+    #       echo "[INFO] Reading required secrets..."
+    #       QUAY_ORG_NAME=$(< /build-credentials/quay-org-name)
+    #       QUAY_ORG_TOKEN=$(< /build-credentials/quay-org-token)
+    #       GH_APP_PRIVATE_KEY=$(< /build-credentials/gh-app-private-key)
+    #       GH_APP_ID=$(< /build-credentials/gh-app-id)
+    #       GH_APP_WEBHOOK_SECRET=$(< /build-credentials/gh-app-webhook-secret)
+    #       SMEE_CHANNEL=$(< /build-credentials/smee-channel)
+
+    #       echo "[INFO] Deploying image-controller..."
+    #       ./deploy-image-controller.sh "${QUAY_ORG_TOKEN}" "${QUAY_ORG_NAME}"
+
+    #       pac_namespaces=( pipelines-as-code build-service integration-service )
+    #       echo "[INFO] Adding PaC secrets to $pac_namespaces..."
+
+    #       for ns in ${pac_namespaces[@]}; do
+    #           kubectl -n $ns create secret generic pipelines-as-code-secret \
+    #             --from-literal github-private-key="${GH_APP_PRIVATE_KEY}" \
+    #             --from-literal github-application-id="${GH_APP_ID}" \
+    #             --from-literal webhook.secret="${GH_APP_WEBHOOK_SECRET}"
+    #       done
+
+    #       echo "[INFO] Deploying smee client..."
+    #       sed "s|https://smee.io/CHANNELID|${SMEE_CHANNEL}|g" \
+    #         ./dependencies/smee/smee-channel-id.tpl \
+    #         > ./dependencies/smee/smee-channel-id.yaml
+    #       kubectl apply -k ./dependencies/smee
+
+    #       ./wait-for-all.sh
+
+    #       kubectl get po -A
+    #     } 2>&1 | tee -a $LOG_FILENAME
+    # - name: create-test-resources
+    #   image: quay.io/konflux-ci/tekton-integration-catalog/utils:latest
+    #   onError: continue
+    #   workingDir: /var/workdir
+    #   when:
+    #     - input: "$(params.create-test-resources)"
+    #       operator: in
+    #       values: ["true"]
+    #   script: |
+    #     #!/bin/bash
+    #     set -euo pipefail
+
+    #     {
+    #     echo "[INFO] Creating Test Resources..."
+    #     ./deploy-test-resources.sh
+    #     } 2>&1 | tee -a $LOG_FILENAME
+
+    # - name: create-cluster-config
+    #   image: quay.io/konflux-ci/tekton-integration-catalog/utils:latest
+    #   onError: continue
+    #   workingDir: /var/workdir
+    #   script: |
+    #     #!/bin/bash
+    #     set -euo pipefail
+
+        # {
+        #   echo "[INFO] Creating cluster-config ConfigMap in konflux-info namespace..."
+
+        #   kubectl create namespace konflux-info --dry-run=client -o yaml | kubectl apply -f -
+
+        #   if kubectl get configmap cluster-config -n konflux-info &>/dev/null; then
+        #     echo "[INFO] cluster-config already exists, skipping."
+        #   else
+        #     kubectl create configmap cluster-config -n konflux-info \
+        #       --from-literal=cluster-type=kind
+        #     echo "[INFO] cluster-config ConfigMap created."
+        #   fi
+
+        #   echo "[INFO] Creating ClusterRole and ClusterRoleBinding for cluster-config read access..."
+        #   kubectl apply -f - <<EOF
+        # apiVersion: rbac.authorization.k8s.io/v1
+        # kind: ClusterRole
+        # metadata:
+        #   name: read-cluster-config
+        # rules:
+        #   - apiGroups: [""]
+        #     resources: ["configmaps"]
+        #     resourceNames: ["cluster-config"]
+        #     verbs: ["get"]
+        # ---
+        # apiVersion: rbac.authorization.k8s.io/v1
+        # kind: ClusterRoleBinding
+        # metadata:
+        #   name: read-cluster-config
+        # roleRef:
+        #   apiGroup: rbac.authorization.k8s.io
+        #   kind: ClusterRole
+        #   name: read-cluster-config
+        # subjects:
+        #   - kind: Group
+        #     name: system:serviceaccounts
+        #     apiGroup: rbac.authorization.k8s.io
+        # EOF
+        #   echo "[INFO] RBAC for cluster-config created."
+        # } 2>&1 | tee -a $LOG_FILENAME
+
+    # - name: harden-kyverno
+    #   image: quay.io/konflux-ci/tekton-integration-catalog/utils:latest
+    #   onError: continue
+    #   workingDir: /var/workdir
+    #   env:
+    #     - name: HARDEN_KYVERNO
+    #       value: "$(params.harden-kyverno)"
+    #   script: |
+    #     #!/bin/bash
+    #     set -euo pipefail
+
+    #     if [[ "${HARDEN_KYVERNO}" != "true" ]]; then
+    #       echo "[INFO] Kyverno hardening is disabled (harden-kyverno=${HARDEN_KYVERNO}). Skipping."
+    #       exit 0
+    #     fi
+
+    #     {
+    #       echo "[INFO] Hardening Kyverno for high-throughput E2E workloads..."
+
+    #       # ── Wait for Kyverno to be available ──────────────────────────
+    #       echo "[INFO] Waiting for kyverno-admission-controller deployment..."
+    #       if ! kubectl -n kyverno wait --for=condition=Available deployment/kyverno-admission-controller --timeout=180s 2>/dev/null; then
+    #         echo "[WARNING] kyverno-admission-controller not found or not available. Skipping Kyverno hardening."
+    #         exit 0
+    #       fi
+
+        #   # ── Scale admission-controller to 3 replicas with increased resources ──
+        #   echo "[INFO] Scaling kyverno-admission-controller to 3 replicas with increased resources..."
+        #   kubectl -n kyverno patch deployment kyverno-admission-controller --type=strategic -p '{
+        #     "spec": {
+        #       "replicas": 3,
+        #       "template": {
+        #         "spec": {
+        #           "containers": [{
+        #             "name": "kyverno",
+        #             "resources": {
+        #               "requests": {"memory": "512Mi", "cpu": "200m"},
+        #               "limits":   {"memory": "4Gi"}
+        #             }
+        #           }]
+        #         }
+        #       }
+        #     }
+        #   }'
+
+        #   # ── Scale background-controller to 2 replicas ──────────────
+        #   echo "[INFO] Scaling kyverno-background-controller to 2 replicas..."
+        #   kubectl -n kyverno patch deployment kyverno-background-controller --type=strategic -p '{
+        #     "spec": {"replicas": 2}
+        #   }' 2>/dev/null || echo "[WARNING] kyverno-background-controller not found, skipping."
+
+        #   # ── Disable reports-controller to reduce etcd write churn ──
+        #   echo "[INFO] Scaling kyverno-reports-controller to 0 replicas to reduce etcd churn..."
+        #   kubectl -n kyverno scale deployment kyverno-reports-controller --replicas=0 2>/dev/null \
+        #     || echo "[WARNING] kyverno-reports-controller not found, skipping."
+
+        #   # ── Wait for rollout ───────────────────────────────────────
+        #   echo "[INFO] Waiting for kyverno-admission-controller rollout..."
+        #   kubectl -n kyverno rollout status deployment/kyverno-admission-controller --timeout=120s || true
+
+        #   echo "[INFO] Waiting for kyverno-background-controller rollout..."
+        #   kubectl -n kyverno rollout status deployment/kyverno-background-controller --timeout=120s 2>/dev/null || true
+
+        #   echo "[INFO] Kyverno hardening complete."
+        #   kubectl -n kyverno get pods
+        # } 2>&1 | tee -a $LOG_FILENAME
+
+    - name: secure-push-oci
+      ref:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/konflux-ci/tekton-integration-catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: stepactions/secure-push-oci/0.1/secure-push-oci.yaml
+      params:
+        - name: workdir-path
+          value: /var/log-dir/
+        - name: oci-ref
+          value: $(params.oci-ref)
+        - name: credentials-volume-name
+          value: oci-credentials
+    - name: fail-if-any-step-failed
+      ref:
+        resolver: git
+        params:
+          - name: url
+            value: https://github.com/konflux-ci/tekton-integration-catalog.git
+          - name: revision
+            value: main
+          - name: pathInRepo
+            value: stepactions/fail-if-any-step-failed/0.1/fail-if-any-step-failed.yaml
