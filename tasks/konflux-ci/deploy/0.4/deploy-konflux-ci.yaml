@@ -264,12 +264,12 @@ spec:
           echo ">>>>>>>>> END OF LIST OF FILES"
 
           echo "[INFO] Reading required secrets..."
-          GITHUB_APP_ID=$(< /build-credentials/gh-app-id)
-          GITHUB_PRIVATE_KEY=$(< /build-credentials/gh-app-private-key)
-          WEBHOOK_SECRET=$(< /build-credentials/gh-app-webhook-secret)
-          QUAY_ORGANIZATION=$(< /build-credentials/quay-org-name)
-          QUAY_TOKEN=$(< /build-credentials/quay-org-token)
-          SMEE_CHANNEL=$(< /build-credentials/smee-channel)
+          export GITHUB_APP_ID=$(< /build-credentials/gh-app-id)
+          export GITHUB_PRIVATE_KEY=$(< /build-credentials/gh-app-private-key)
+          export WEBHOOK_SECRET=$(< /build-credentials/gh-app-webhook-secret)
+          export QUAY_ORGANIZATION=$(< /build-credentials/quay-org-name)
+          export QUAY_TOKEN=$(< /build-credentials/quay-org-token)
+          export SMEE_CHANNEL=$(< /build-credentials/smee-channel)
 
           export DEPLOY_LOCAL_SKIP_KIND=1
           export KIND_CLUSTER=konflux
