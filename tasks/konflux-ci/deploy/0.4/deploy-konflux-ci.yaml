@@ -110,8 +110,8 @@ spec:
       image: quay.io/openshift-pipeline/pipelines-git-init-rhel9@sha256:7eee14366c516d92cf7480c9bc256cf0e544bf06da5d46ffb5e8bfe3e448326c
       onError: continue
       workingDir: /var/workdir
-      # securityContext:
-      #   runAsUser: 0
+      securityContext:
+        runAsUser: 0
       args:
         - -url=$(params.repo-url)
         - -revision=$(params.repo-branch)
@@ -217,6 +217,8 @@ spec:
       image: quay.io/konflux-ci/task-runner:1.6.0@sha256:1abfe4e50d4e961d0fd9790202565f93ee650fe8dfc50932c94989acba10485f
       onError: continue
       workingDir: /var/workdir
+      securityContext:
+        runAsUser: 0
       script: |
         #!/bin/bash
         set -euo pipefail
@@ -273,8 +275,8 @@ spec:
           export KONFLUX_READY_TIMEOUT=30m
           export CONTAINER_TOOL=podman
           export OPERATOR_INSTALL_METHOD=local
-          echo ">>> Now running the deploy script"
-
+          
+          echo "[INFO] Starting deployment of konflux ..."
           ./scripts/deploy-local.sh
 
         } 2>&1 | tee -a $LOG_FILENAME
