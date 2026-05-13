@@ -110,8 +110,8 @@ spec:
       image: quay.io/openshift-pipeline/pipelines-git-init-rhel9@sha256:7eee14366c516d92cf7480c9bc256cf0e544bf06da5d46ffb5e8bfe3e448326c
       onError: continue
       workingDir: /var/workdir
-      securityContext:
-        runAsUser: 0
+      # securityContext:
+      #   runAsUser: 0
       args:
         - -url=$(params.repo-url)
         - -revision=$(params.repo-branch)
