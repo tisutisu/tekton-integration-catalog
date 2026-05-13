@@ -214,7 +214,7 @@ spec:
         #   fi
         # } 2>&1 | tee -a "$LOG_FILENAME"
     - name: deploy-konflux-ci
-      image: quay.io/konflux-ci/tekton-integration-catalog/utils:latest
+      image: quay.io/konflux-ci/task-runner:1.6.0@sha256:1abfe4e50d4e961d0fd9790202565f93ee650fe8dfc50932c94989acba10485f
       onError: continue
       workingDir: /var/workdir
       script: |
@@ -258,10 +258,6 @@ spec:
         #   kubectl get po -A
         # } 2>&1 | tee -a $LOG_FILENAME
         {
-          echo ">>> WOKRING INSIDE: $(pwd)"
-          echo ">>> FILES HERE: "
-          ls -lrt
-          echo ">>>>>>>>> END OF LIST OF FILES"
 
           echo "[INFO] Reading required secrets..."
           export GITHUB_APP_ID=$(< /build-credentials/gh-app-id)
